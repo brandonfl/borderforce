@@ -13322,12 +13322,17 @@ const route = /^P\d+$/i.test(routeBrute.trim())
 <script>
 /* =========================================================
    TEST — BUS LA TURBIE
-   Source : Worker Cloudflare dédié.
+   Source : Worker Cloudflare dédié. S'il refuse ou ne répond pas,
+   repli sur les catalogues publiés par le site d'origine (horaires estimés).
    Cette couche est strictement informative.
    ========================================================= */
 (() => {
   const BF_BUS_TURBIE_WORKER =
     "https://borderforce-bus-turbie.markrusten.workers.dev/api/bus-la-turbie";
+  const BF_BUS_TURBIE_CATALOGUES = [
+    "https://markrustenholtz.github.io/borderforce/data/flix_turbie.json",
+    "https://markrustenholtz.github.io/borderforce/data/blablacar_turbie.json"
+  ];
   const BF_BUS_TURBIE_MARGIN_MIN = 60;
 
   let lastRequestKey = "";
@@ -13592,6 +13597,86 @@ const route = /^P\d+$/i.test(routeBrute.trim())
     el.textContent = message;
   }
 
+  async function fetchWorkerBuses(m) {
+    const url = new URL(BF_BUS_TURBIE_WORKER);
+    url.searchParams.set("date", m.date);
+    url.searchParams.set("from", m.from);
+    url.searchParams.set("to", m.to);
+    url.searchParams.set("margin", String(BF_BUS_TURBIE_MARGIN_MIN));
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      cache: "no-store"
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_) {
+      throw new Error(`Réponse Worker illisible (HTTP ${response.status}).`);
+    }
+
+    if (!response.ok || !data?.fonctionnement) {
+      throw new Error(
+        data?.erreur ||
+        data?.detail ||
+        `Erreur Worker HTTP ${response.status}`
+      );
+    }
+
+    return {
+      buses: Array.isArray(data.buses) ? data.buses : [],
+      warnings: Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : []
+    };
+  }
+
+  // Date et heure locales converties en minutes sans fuseau : la mission et les
+  // passages sont tous en heure de Paris, il suffit de les comparer entre eux.
+  function localMinutes(date, time) {
+    const [y, mo, d] = String(date || "").split("-").map(Number);
+    const [h, mi] = String(time || "").split(":").map(Number);
+    return Date.UTC(y, mo - 1, d, h, mi) / 60000;
+  }
+
+  async function fetchCatalogBuses(m) {
+    const results = await Promise.allSettled(
+      BF_BUS_TURBIE_CATALOGUES.map(async url => {
+        const response = await fetch(url, { headers: { "Accept": "application/json" } });
+        if (!response.ok) throw new Error(`Catalogue indisponible (HTTP ${response.status}).`);
+        return response.json();
+      })
+    );
+
+    const catalogues = results.filter(r => r.status === "fulfilled").map(r => r.value);
+    if (!catalogues.length) throw results[0].reason;
+
+    const start = localMinutes(m.date, m.from) - BF_BUS_TURBIE_MARGIN_MIN;
+    const end =
+      localMinutes(m.date, m.to) + BF_BUS_TURBIE_MARGIN_MIN + (m.to <= m.from ? 24 * 60 : 0);
+
+    const buses = catalogues
+      .flatMap(catalogue => Array.isArray(catalogue?.buses) ? catalogue.buses : [])
+      .filter(bus => !bus?.cancelled)
+      .map(bus => ({ bus, minutes: localMinutes(bus?.etaTurbieDate, bus?.etaTurbieTime) }))
+      .filter(({ minutes }) => minutes >= start && minutes <= end)
+      .sort((a, b) => a.minutes - b.minutes)
+      .map(({ bus }) => bus);
+
+    const generatedOn = catalogues
+      .map(catalogue => String(catalogue?.generatedAt || "").slice(0, 10))
+      .filter(Boolean)
+      .sort()[0];
+
+    return {
+      buses,
+      warnings: [
+        "Temps réel indisponible : horaires estimés d'après les catalogues" +
+        (generatedOn ? ` du ${generatedOn.split("-").reverse().join("/")}.` : ".")
+      ]
+    };
+  }
+
   async function refresh(force = false) {
     const panel = document.getElementById("bfBusTurbieTestPanel");
     const list = document.getElementById("bfBusTurbieList");
@@ -13631,43 +13716,20 @@ const route = /^P\d+$/i.test(routeBrute.trim())
     list.innerHTML = "";
 
     try {
-      const url = new URL(BF_BUS_TURBIE_WORKER);
-      url.searchParams.set("date", m.date);
-      url.searchParams.set("from", m.from);
-      url.searchParams.set("to", m.to);
-      url.searchParams.set("margin", String(BF_BUS_TURBIE_MARGIN_MIN));
-
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: { "Accept": "application/json" },
-        cache: "no-store"
-      });
-
-      let data = null;
+      let result;
       try {
-        data = await response.json();
-      } catch (_) {
-        throw new Error(`Réponse Worker illisible (HTTP ${response.status}).`);
-      }
-
-      if (!response.ok || !data?.fonctionnement) {
-        throw new Error(
-          data?.erreur ||
-          data?.detail ||
-          `Erreur Worker HTTP ${response.status}`
-        );
+        result = await fetchWorkerBuses(m);
+      } catch (workerError) {
+        console.warn("Bus La Turbie : Worker indisponible, repli sur les catalogues.", workerError);
+        result = await fetchCatalogBuses(m);
       }
 
       // Protection d'affichage complémentaire : si le Worker reçoit encore
       // momentanément deux copies identiques, LIVE reste seul face à ESTIMÉ.
-      const buses = deduplicateDisplayedBuses(
-        Array.isArray(data.buses) ? data.buses : []
-      );
+      const buses = deduplicateDisplayedBuses(result.buses);
       renderBuses(buses);
 
-      const warnings = Array.isArray(data.warnings)
-        ? data.warnings.filter(Boolean)
-        : [];
+      const warnings = result.warnings;
 
       const companies = [...new Set(buses.map(b => b.company).filter(Boolean))];
       let msg =

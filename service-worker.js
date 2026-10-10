@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bf-suite-v67-live-api-no-cache';
+const CACHE_NAME = 'bf-suite-v68-bus-catalogs-network-first';
 
 const URLS_TO_CACHE = [
   './',
@@ -25,6 +25,16 @@ function isLiveApiRequest(request) {
   try {
     const url = new URL(request.url);
     return url.hostname.endsWith('.workers.dev');
+  } catch (_) {
+    return false;
+  }
+}
+
+// Les catalogues de bus de La Turbie sont régénérés chaque jour :
+// servis « cache d'abord », ils resteraient figés à leur première version.
+function isBusCatalogRequest(request) {
+  try {
+    return new URL(request.url).pathname.endsWith('_turbie.json');
   } catch (_) {
     return false;
   }
@@ -61,6 +71,22 @@ self.addEventListener('fetch', event => {
   if (isLiveApiRequest(event.request)) {
     event.respondWith(
       fetch(event.request, { cache: 'no-store' })
+    );
+    return;
+  }
+
+  // Catalogues de bus : réseau d'abord, cache uniquement si le réseau est indisponible.
+  if (isBusCatalogRequest(event.request)) {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
     );
     return;
   }
