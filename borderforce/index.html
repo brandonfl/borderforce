@@ -808,6 +808,31 @@ button.next:hover{
   margin-top:0;
 }
 
+.bf-lot-armement-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px 12px;
+  padding:8px 0;
+  border-bottom:1px solid var(--bf-border);
+}
+
+.bf-lot-armement-row:last-child{
+  border-bottom:none;
+}
+
+.bf-lot-armement-row label{
+  flex:1 1 180px;
+  margin:0;
+}
+
+.bf-lot-armement-row input[type=number]{
+  flex:0 0 110px;
+  width:110px;
+  margin:0;
+}
+
 #compteRendu{
   min-height:420px;
 }
@@ -3052,6 +3077,12 @@ button.whatsapp:hover {
       <div class="small-note">Tous les champs ESR doivent être remplis pour ajouter un militaire.</div>
     </section>
 
+    <section class="friendly-card">
+      <h2>3 - Lot armement (optionnel)</h2>
+      <p class="friendly-subtitle">Indique le numéro de lot de chaque ESR.</p>
+      <div id="lotArmementList"></div>
+    </section>
+
     <div class="step-actions">
       <button class="next" onclick="showPage('materielPage')">
         Étape suivante : Matériel <i class="fas fa-arrow-right"></i>
@@ -4463,7 +4494,45 @@ if (resumeEl) {
     }
 
     // ESR functions
+    function renderLotsArmement() {
+      const container = document.getElementById('lotArmementList');
+      if (!container) return;
+      container.innerHTML = '';
+      if (!state.esrList || state.esrList.length === 0) {
+        container.innerHTML = "<p>Ajoute d'abord les ESR.</p>";
+        return;
+      }
+
+      state.esrList.forEach((esr, i) => {
+        const row = document.createElement('div');
+        row.className = 'bf-lot-armement-row';
+
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.id = `lotArmement-${i}`;
+        input.inputMode = 'numeric';
+        input.pattern = '[0-9]*';
+        input.min = '0';
+        input.step = '1';
+        input.placeholder = 'N° lot';
+        input.value = esr.lotArmement || '';
+        input.addEventListener('input', () => {
+          esr.lotArmement = input.value.trim();
+          debounceSave();
+        });
+
+        const label = document.createElement('label');
+        label.htmlFor = input.id;
+        label.textContent = `${i+1} - ${esr.grade} ${esr.nom}`;
+
+        row.appendChild(label);
+        row.appendChild(input);
+        container.appendChild(row);
+      });
+    }
+
     function renderEsrList() {
+      renderLotsArmement();
       const container = document.getElementById('esrList');
       container.innerHTML = '';
       if(!state.esrList || state.esrList.length === 0) {
@@ -4624,7 +4693,7 @@ if (resumeEl) {
 
       if(state.editingEsrIndex !== null && state.editingEsrIndex !== undefined) {
         // Modification volontaire depuis le bouton Modifier.
-        state.esrList[state.editingEsrIndex] = {grade, nom, nigend, crt};
+        state.esrList[state.editingEsrIndex] = {...state.esrList[state.editingEsrIndex], grade, nom, nigend, crt};
         state.editingEsrIndex = null;
         document.getElementById('addEsrBtn').textContent = "Ajouter ESR";
       } else {
@@ -5099,7 +5168,8 @@ function rebuildDeroulementAuto() {
 
       cr += `(${esrCount}) ESR\n`;
       (state.esrList || []).forEach((esr,i) => {
-        cr += `${i+1} ${esr.grade} ${esr.nom} - ${esr.nigend} - CRT ${esr.crt}\n`;
+        const lot = String(esr.lotArmement || '').trim();
+        cr += `${i+1} ${esr.grade} ${esr.nom} - ${esr.nigend} - CRT ${esr.crt}${lot ? ` - Lot armement n° ${lot}` : ''}\n`;
       });
 
       cr += `\nPorteur caméra n° ${state.cameraNum} : ${state.cameraESR || ''}\n`;
@@ -8176,6 +8246,7 @@ async function confirmerFinMissionBorderForce() {
       const parsed = JSON.parse(data);
       if (parsed.esrList && parsed.esrList.length > 0) {
         premierEsr = parsed.esrList[0]; // on garde le 1er ESR
+        delete premierEsr.lotArmement;
       }
     }
 
